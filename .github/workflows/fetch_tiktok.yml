@@ -1,61 +1,45 @@
-name: Fetch TikTok Videos
+name: Fetch TikTok Videos (yt-dlp)
 
 on:
-  # You can manually trigger this workflow from the GitHub Actions tab
   workflow_dispatch:
     inputs:
       username:
         description: 'TikTok Username (without @)'
         required: true
-        default: 'therock'
+        default: 'im.stary.neco'
       max_videos:
-        description: 'Number of recent videos to fetch'
+        description: 'Number of recent videos'
         required: true
         default: '20'
-  # You can also schedule it to run automatically, e.g., twice a day
-  schedule:
-    - cron: '0 */12 * * *'  # Runs every 12 hours
-  # Or run it on every push to the main branch (for testing)
-  # push:
-  #   branches: [ main ]
 
 jobs:
-  fetch-tiktok-videos:
+  fetch-tiktok:
     runs-on: ubuntu-latest
-    # Set a timeout to avoid long-running jobs if something goes wrong
-    timeout-minutes: 5
-
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
+      - name: Checkout repo
+        uses: actions/checkout@v4
 
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.x'
+      - name: Install yt-dlp
+        run: |
+          sudo apt update
+          sudo apt install -y ffmpeg   # optional, but recommended
+          pip install yt-dlp
 
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install TikTokApi
+      - name: Extract recent video links
+        run: |
+          USERNAME="${{ github.event.inputs.username }}"
+          MAX_COUNT="${{ github.event.inputs.max_videos }}"
+          echo "Fetching $MAX_COUNT videos from @$USERNAME"
+          
+          # Get video URLs (flat playlist, only URLs)
+          yt-dlp --flat-playlist --print url "https://www.tiktok.com/@$USERNAME" | head -n $MAX_COUNT > recent_video_links.txt
+          
+          echo "Done. Saved $(wc -l < recent_video_links.txt) URLs."
 
-    - name: Run TikTok scraper
-      env:
-        TIKTOK_USERNAME: ${{ github.event.inputs.username || 'therock' }}
-      run: |
-        python .github/scripts/get_tiktok_videos.py
-
-    - name: Upload video links as artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: tiktok-video-links
-        path: recent_video_links.txt
-        if-no-files-found: error
-
-    - name: Commit and push the file (optional)
-      run: |
-        git config --local user.email "action@github.com"
-        git config --local user.name "GitHub Action"
-        git add recent_video_links.txt
-        git diff --quiet && git diff --staged --quiet || git commit -m "Update TikTok video links"
-        git push
+      - name: Commit and push the file
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add recent_video_links.txt
+          git diff --staged --quiet || git commit -m "Update TikTok video links for @${{ github.event.inputs.username }}"
+          git push
