@@ -6,11 +6,11 @@ on:
       username:
         description: 'TikTok Username (without @)'
         required: true
-        default: 'im.stary.neco'
+        default: ''
       max_videos:
         description: 'Number of videos to download (1-5 recommended)'
         required: true
-        default: '3'
+        default: '50'
 
 permissions:
   contents: write
