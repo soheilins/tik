@@ -1,0 +1,51 @@
+name: Fetch & Commit TikTok Videos
+
+on:
+  workflow_dispatch:
+    inputs:
+      username:
+        description: 'TikTok Username (without @)'
+        required: true
+        default: 'im.stary.neco'
+      max_videos:
+        description: 'Number of videos to download (1-5 recommended)'
+        required: true
+        default: '3'
+
+permissions:
+  contents: write
+
+jobs:
+  download-and-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install yt-dlp
+        run: pip install yt-dlp
+
+      - name: Get video URLs
+        run: |
+          USERNAME="${{ github.event.inputs.username }}"
+          MAX="${{ github.event.inputs.max_videos }}"
+          yt-dlp --flat-playlist --print url "https://www.tiktok.com/@$USERNAME" 2>/dev/null | head -n $MAX > urls.txt
+          echo "Found $(wc -l < urls.txt) URLs"
+
+      - name: Download videos
+        run: |
+          mkdir -p videos
+          cat urls.txt | while read url; do
+            echo "Downloading $url"
+            yt-dlp -o "videos/%(title).60s_%(id)s.%(ext)s" "$url"
+          done
+          ls -lh videos/
+
+      - name: Commit and push videos
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add videos/
+          git add urls.txt
+          git diff --staged --quiet || git commit -m "Add TikTok videos for @${{ github.event.inputs.username }}"
+          git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git HEAD:main
