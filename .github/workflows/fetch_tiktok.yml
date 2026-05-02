@@ -1,0 +1,61 @@
+name: Fetch TikTok Videos
+
+on:
+  # You can manually trigger this workflow from the GitHub Actions tab
+  workflow_dispatch:
+    inputs:
+      username:
+        description: 'TikTok Username (without @)'
+        required: true
+        default: 'therock'
+      max_videos:
+        description: 'Number of recent videos to fetch'
+        required: true
+        default: '20'
+  # You can also schedule it to run automatically, e.g., twice a day
+  schedule:
+    - cron: '0 */12 * * *'  # Runs every 12 hours
+  # Or run it on every push to the main branch (for testing)
+  # push:
+  #   branches: [ main ]
+
+jobs:
+  fetch-tiktok-videos:
+    runs-on: ubuntu-latest
+    # Set a timeout to avoid long-running jobs if something goes wrong
+    timeout-minutes: 5
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.x'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install TikTokApi
+
+    - name: Run TikTok scraper
+      env:
+        TIKTOK_USERNAME: ${{ github.event.inputs.username || 'therock' }}
+      run: |
+        python .github/scripts/get_tiktok_videos.py
+
+    - name: Upload video links as artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: tiktok-video-links
+        path: recent_video_links.txt
+        if-no-files-found: error
+
+    - name: Commit and push the file (optional)
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        git add recent_video_links.txt
+        git diff --quiet && git diff --staged --quiet || git commit -m "Update TikTok video links"
+        git push
