@@ -7,7 +7,7 @@ on:
         description: 'TikTok Username (without @)'
         required: true
       max_videos:
-        description: 'Number of recent videos to check for new ones'
+        description: 'Number of recent videos to check'
         required: true
         default: '50'
 
@@ -35,12 +35,6 @@ jobs:
               EXISTING_IDS="$EXISTING_IDS $id"
             fi
           done
-          for d in videos/$USERNAME/*_chunks/; do
-            if [ -d "$d" ]; then
-              id=$(basename "$d" | sed 's/_chunks//')
-              EXISTING_IDS="$EXISTING_IDS $id"
-            fi
-          done
           echo "$EXISTING_IDS" | tr ' ' '\n' > existing_ids.txt
           echo "Found $(wc -l < existing_ids.txt) existing videos"
 
@@ -57,44 +51,54 @@ jobs:
           done < video_list.txt
           echo "New videos to download: $(wc -l < new_urls.txt)"
 
-      - name: Download, split if >100MB, and store (only new videos)
+      - name: Download or skip large videos
         run: |
           USERNAME="${{ github.event.inputs.username }}"
           mkdir -p "videos/$USERNAME"
-          CHUNK_SIZE=5M
+          OVER100_FILE="videos/$USERNAME/over100.txt"
+          touch "$OVER100_FILE"
+          
           if [ ! -s new_urls.txt ]; then
-            echo "No new videos to download."
+            echo "No new videos to process."
             exit 0
           fi
+          
           while read url; do
-            echo "Downloading new video: $url"
+            echo "Processing: $url"
+            # Get video ID and title
+            VIDEO_ID=$(yt-dlp --print id "$url")
+            VIDEO_TITLE=$(yt-dlp --print title "$url" | tr -d '/' | cut -c1-50)
+            
+            # Check if this URL is already in over100.txt
+            if grep -Fxq "$url" "$OVER100_FILE"; then
+              echo "  URL already marked as >100MB, skipping."
+              continue
+            fi
+            
+            # Download to a temp file to check size
             yt-dlp -o "temp_video.%(ext)s" "$url"
             VIDEO_FILE=$(ls temp_video.* 2>/dev/null | head -1)
             if [ -f "$VIDEO_FILE" ]; then
               FILE_SIZE=$(stat -c%s "$VIDEO_FILE")
-              VIDEO_ID=$(yt-dlp --print id "$url")
-              VIDEO_TITLE=$(yt-dlp --print title "$url" | tr -d '/' | cut -c1-50)
               if [ $FILE_SIZE -gt $((100 * 1024 * 1024)) ]; then
-                echo "  File size >100MB, splitting into ${CHUNK_SIZE} chunks"
-                mkdir -p "videos/$USERNAME/${VIDEO_ID}_chunks"
-                split -b $CHUNK_SIZE -d "$VIDEO_FILE" "videos/$USERNAME/${VIDEO_ID}_chunks/chunk_"
-                echo "$VIDEO_TITLE" > "videos/$USERNAME/${VIDEO_ID}_chunks/title.txt"
-                echo "$VIDEO_ID" > "videos/$USERNAME/${VIDEO_ID}_chunks/id.txt"
+                echo "  File size >100MB, adding URL to $OVER100_FILE"
+                echo "$url" >> "$OVER100_FILE"
+                rm "$VIDEO_FILE"
               else
                 echo "  File size <=100MB, saving directly"
                 cp "$VIDEO_FILE" "videos/$USERNAME/${VIDEO_TITLE}_${VIDEO_ID}.mp4"
+                rm "$VIDEO_FILE"
               fi
-              rm "$VIDEO_FILE"
             else
-              echo "  Failed to download $url"
+              echo "  Failed to download $url (will retry next time)"
             fi
           done < new_urls.txt
 
-      - name: Commit and push new videos
+      - name: Commit and push
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add videos/
-          git add urls.txt existing_ids.txt 2>/dev/null || true
-          git diff --staged --quiet || git commit -m "Add new TikTok videos for @${{ github.event.inputs.username }}"
+          git add existing_ids.txt
+          git diff --staged --quiet || git commit -m "Update TikTok videos for @${{ github.event.inputs.username }}"
           git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git HEAD:main
