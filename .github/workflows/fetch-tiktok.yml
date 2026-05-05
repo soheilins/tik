@@ -35,6 +35,12 @@ jobs:
               EXISTING_IDS="$EXISTING_IDS $id"
             fi
           done
+          for d in videos/$USERNAME/*_chunks/; do
+            if [ -d "$d" ]; then
+              id=$(basename "$d" | sed 's/_chunks//')
+              EXISTING_IDS="$EXISTING_IDS $id"
+            fi
+          done
           echo "$EXISTING_IDS" | tr ' ' '\n' > existing_ids.txt
           echo "Found $(wc -l < existing_ids.txt) existing videos"
 
@@ -51,46 +57,38 @@ jobs:
           done < video_list.txt
           echo "New videos to download: $(wc -l < new_urls.txt)"
 
-      - name: Download or skip large videos
+      - name: Download and store (timestamp + ID filename + title file)
         run: |
           USERNAME="${{ github.event.inputs.username }}"
           mkdir -p "videos/$USERNAME"
-          OVER100_FILE="videos/$USERNAME/over100.txt"
-          touch "$OVER100_FILE"
-          
           if [ ! -s new_urls.txt ]; then
-            echo "No new videos to process."
+            echo "No new videos to download."
             exit 0
           fi
-          
           while read url; do
-            echo "Processing: $url"
-            # Get video ID and title
-            VIDEO_ID=$(yt-dlp --print id "$url")
-            VIDEO_TITLE=$(yt-dlp --print title "$url" | tr -d '/' | cut -c1-50)
-            
-            # Check if this URL is already in over100.txt
-            if grep -Fxq "$url" "$OVER100_FILE"; then
-              echo "  URL already marked as >100MB, skipping."
-              continue
-            fi
-            
-            # Download to a temp file to check size
+            echo "Downloading new video: $url"
             yt-dlp -o "temp_video.%(ext)s" "$url"
             VIDEO_FILE=$(ls temp_video.* 2>/dev/null | head -1)
             if [ -f "$VIDEO_FILE" ]; then
               FILE_SIZE=$(stat -c%s "$VIDEO_FILE")
+              VIDEO_ID=$(yt-dlp --print id "$url")
+              VIDEO_TITLE=$(yt-dlp --print title "$url" || echo "Untitled")
+              # Clean forward slashes for safety
+              VIDEO_TITLE_CLEAN=$(echo "$VIDEO_TITLE" | sed 's:/:-:g')
+              TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+              SAFE_BASENAME="${TIMESTAMP}_${VIDEO_ID}"
               if [ $FILE_SIZE -gt $((100 * 1024 * 1024)) ]; then
-                echo "  File size >100MB, adding URL to $OVER100_FILE"
-                echo "$url" >> "$OVER100_FILE"
-                rm "$VIDEO_FILE"
+                echo "  File size >100MB, adding URL to over100.txt"
+                echo "https://www.tiktok.com/@$USERNAME/video/$VIDEO_ID -> $VIDEO_TITLE_CLEAN" >> "videos/$USERNAME/over100.txt"
               else
-                echo "  File size <=100MB, saving directly"
-                cp "$VIDEO_FILE" "videos/$USERNAME/${VIDEO_TITLE}_${VIDEO_ID}.mp4"
-                rm "$VIDEO_FILE"
+                echo "  File size <=100MB, saving as ${SAFE_BASENAME}.mp4"
+                cp "$VIDEO_FILE" "videos/$USERNAME/${SAFE_BASENAME}.mp4"
+                # Save original title
+                echo "$VIDEO_TITLE" > "videos/$USERNAME/${SAFE_BASENAME}.title.txt"
               fi
+              rm "$VIDEO_FILE"
             else
-              echo "  Failed to download $url (will retry next time)"
+              echo "  Failed to download $url"
             fi
           done < new_urls.txt
 
