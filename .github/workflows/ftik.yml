@@ -1,0 +1,84 @@
+name: Fetch TikTok Videos
+
+on:
+  workflow_dispatch:
+    inputs:
+      username:
+        description: 'TikTok Username (without @)'
+        required: true
+      max_videos:
+        description: 'Number of videos to check (default 30)'
+        required: false
+        default: '30'
+
+permissions:
+  contents: write
+
+jobs:
+  download-and-commit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install yt-dlp
+        run: pip install yt-dlp
+
+      - name: Get existing video IDs from repo
+        id: existing
+        run: |
+          USERNAME="${{ github.event.inputs.username }}"
+          mkdir -p "videos/$USERNAME"
+          # List existing files and extract TikTok video IDs (assuming filenames contain the ID)
+          if [ -d "videos/$USERNAME" ]; then
+            ls "videos/$USERNAME" | grep -oP '(?<=_)[A-Za-z0-9_-]+(?=\.)' > existing_ids.txt || touch existing_ids.txt
+          else
+            touch existing_ids.txt
+          fi
+          echo "Found $(wc -l < existing_ids.txt) existing videos"
+
+      - name: Get new video URLs (skip existing)
+        run: |
+          USERNAME="${{ github.event.inputs.username }}"
+          MAX="${{ github.event.inputs.max_videos }}"
+          # Get all video URLs, then filter out those whose ID is already in existing_ids.txt
+          yt-dlp --flat-playlist --print "url %(id)s" "https://www.tiktok.com/@$USERNAME" 2>/dev/null | \
+          head -n $MAX | while read url id; do
+            if ! grep -qx "$id" existing_ids.txt; then
+              echo "$url" >> new_urls.txt
+            fi
+          done
+          echo "New videos to download: $(wc -l < new_urls.txt)"
+
+      - name: Download new videos
+        run: |
+          USERNAME="${{ github.event.inputs.username }}"
+          mkdir -p "videos/$USERNAME"
+          if [ -f new_urls.txt ]; then
+            cat new_urls.txt | while read url; do
+              echo "Downloading $url"
+              yt-dlp -o "videos/$USERNAME/%(title).60s_%(id)s.%(ext)s" "$url" || echo "Failed: $url" >> failed.log
+            done
+          else
+            echo "No new videos to download"
+          fi
+          ls -lh "videos/$USERNAME/"
+
+      - name: Retry failed downloads (if any)
+        if: always()
+        run: |
+          if [ -f failed.log ] && [ -s failed.log ]; then
+            echo "Retrying failed downloads..."
+            USERNAME="${{ github.event.inputs.username }}"
+            for url in $(cat failed.log | cut -d' ' -f2); do
+              yt-dlp -o "videos/$USERNAME/%(title).60s_%(id)s.%(ext)s" "$url"
+            done
+          fi
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add videos/
+          git diff --staged --quiet || git commit -m "Add TikTok videos for @${{ github.event.inputs.username }}"
+          git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git HEAD:main
