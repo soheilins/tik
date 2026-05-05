@@ -1,4 +1,4 @@
-name: Fetch & Commit TikTok Videos
+name: Fetch & Commit TikTok Videos (Incremental)
 
 on:
   workflow_dispatch:
@@ -7,7 +7,7 @@ on:
         description: 'TikTok Username (without @)'
         required: true
       max_videos:
-        description: 'Number of videos to download'
+        description: 'Number of recent videos to check for new ones'
         required: true
         default: '50'
 
@@ -15,7 +15,7 @@ permissions:
   contents: write
 
 jobs:
-  download-and-split:
+  download-new-videos:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -23,35 +23,66 @@ jobs:
       - name: Install yt-dlp
         run: pip install yt-dlp
 
-      - name: Get video URLs
-        run: |
-          USERNAME="${{ github.event.inputs.username }}"
-          MAX="${{ github.event.inputs.max_videos }}"
-          yt-dlp --flat-playlist --print url "https://www.tiktok.com/@$USERNAME" 2>/dev/null | head -n $MAX > urls.txt
-          echo "Found $(wc -l < urls.txt) URLs"
-
-      - name: Download, split if >100MB, and store
+      - name: Get existing video IDs from repo
+        id: existing
         run: |
           USERNAME="${{ github.event.inputs.username }}"
           mkdir -p "videos/$USERNAME"
-          CHUNK_SIZE=5M   # 5 MB per chunk
+          EXISTING_IDS=""
+          # Look for .mp4 files (format: title_ID.mp4)
+          for f in videos/$USERNAME/*.mp4; do
+            if [ -f "$f" ]; then
+              # Extract ID after last underscore before .mp4
+              id=$(basename "$f" .mp4 | sed 's/.*_//')
+              EXISTING_IDS="$EXISTING_IDS $id"
+            fi
+          done
+          # Look for chunk folders (format: ID_chunks)
+          for d in videos/$USERNAME/*_chunks/; do
+            if [ -d "$d" ]; then
+              id=$(basename "$d" | sed 's/_chunks//')
+              EXISTING_IDS="$EXISTING_IDS $id"
+            fi
+          done
+          # Save to file for later steps
+          echo "$EXISTING_IDS" | tr ' ' '\n' > existing_ids.txt
+          echo "Found $(wc -l < existing_ids.txt) existing videos"
 
+      - name: Get new video URLs (skip existing)
+        run: |
+          USERNAME="${{ github.event.inputs.username }}"
+          MAX="${{ github.event.inputs.max_videos }}"
+          # Fetch video info: URL and ID
+          yt-dlp --flat-playlist --print "url %(id)s" "https://www.tiktok.com/@$USERNAME" 2>/dev/null | head -n $MAX > video_list.txt
+          # Filter out URLs whose ID is already in existing_ids.txt
+          while read url id; do
+            if ! grep -qx "$id" existing_ids.txt; then
+              echo "$url" >> new_urls.txt
+            fi
+          done < video_list.txt
+          echo "New videos to download: $(wc -l < new_urls.txt)"
+
+      - name: Download, split if >100MB, and store (only new videos)
+        run: |
+          USERNAME="${{ github.event.inputs.username }}"
+          mkdir -p "videos/$USERNAME"
+          CHUNK_SIZE=5M
+          if [ ! -f new_urls.txt ] || [ ! -s new_urls.txt ]; then
+            echo "No new videos to download."
+            exit 0
+          fi
           while read url; do
-            echo "Downloading $url"
-            # Download to a temp file
+            echo "Downloading new video: $url"
             yt-dlp -o "temp_video.%(ext)s" "$url"
-            # Get the actual file name
             VIDEO_FILE=$(ls temp_video.* 2>/dev/null | head -1)
             if [ -f "$VIDEO_FILE" ]; then
               FILE_SIZE=$(stat -c%s "$VIDEO_FILE")
-              # Extract video ID from filename (yt-dlp includes ID)
               VIDEO_ID=$(yt-dlp --print id "$url")
               VIDEO_TITLE=$(yt-dlp --print title "$url" | tr -d '/' | cut -c1-50)
               if [ $FILE_SIZE -gt $((100 * 1024 * 1024)) ]; then
                 echo "  File size >100MB, splitting into ${CHUNK_SIZE} chunks"
                 mkdir -p "videos/$USERNAME/${VIDEO_ID}_chunks"
                 split -b $CHUNK_SIZE -d "$VIDEO_FILE" "videos/$USERNAME/${VIDEO_ID}_chunks/chunk_"
-                # Save metadata
                 echo "$VIDEO_TITLE" > "videos/$USERNAME/${VIDEO_ID}_chunks/title.txt"
                 echo "$VIDEO_ID" > "videos/$USERNAME/${VIDEO_ID}_chunks/id.txt"
               else
@@ -62,13 +93,13 @@ jobs:
             else
               echo "  Failed to download $url"
             fi
-          done < urls.txt
+          done < new_urls.txt
 
-      - name: Commit and push
+      - name: Commit and push new videos
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add videos/
-          git add urls.txt
-          git diff --staged --quiet || git commit -m "TikTok videos for @${{ github.event.inputs.username }}"
+          git add urls.txt existing_ids.txt 2>/dev/null || true
+          git diff --staged --quiet || git commit -m "Add new TikTok videos for @${{ github.event.inputs.username }}"
           git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git HEAD:main
