@@ -7,7 +7,7 @@ on:
         description: 'TikTok Username (without @)'
         required: true
       max_videos:
-        description: 'Number of videos to download (1-5 recommended)'
+        description: 'Number of videos to download'
         required: true
         default: '50'
 
@@ -21,8 +21,12 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Install yt-dlp
-        run: pip install yt-dlp
+      - name: Install yt-dlp with impersonation dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-pip python3-setuptools
+          pip install --upgrade pip
+          pip install yt-dlp[default] curl_cffi
 
       - name: Get video URLs
         run: |
@@ -31,7 +35,7 @@ jobs:
           yt-dlp --flat-playlist --print url "https://www.tiktok.com/@$USERNAME" 2>/dev/null | head -n $MAX > urls.txt
           echo "Found $(wc -l < urls.txt) URLs"
 
-      - name: Download videos (with retry)
+      - name: Download videos (with retry and impersonation)
         run: |
           USERNAME="${{ github.event.inputs.username }}"
           mkdir -p "videos/$USERNAME"
@@ -40,7 +44,7 @@ jobs:
           echo "=== Pass 1: Initial download ==="
           while read url; do
             echo "Downloading $url"
-            if ! yt-dlp -o "videos/$USERNAME/%(title).60s_%(id)s.%(ext)s" "$url"; then
+            if ! yt-dlp --impersonate chrome -o "videos/$USERNAME/%(title).60s_%(id)s.%(ext)s" "$url"; then
               echo "$url" >> failed.txt
             fi
           done < urls.txt
@@ -50,7 +54,7 @@ jobs:
             echo "=== Pass 2: Retrying failed downloads ==="
             while read url; do
               echo "Retrying $url"
-              yt-dlp -o "videos/$USERNAME/%(title).60s_%(id)s.%(ext)s" "$url"
+              yt-dlp --impersonate chrome -o "videos/$USERNAME/%(title).60s_%(id)s.%(ext)s" "$url"
             done < failed.txt
             rm failed.txt
           else
