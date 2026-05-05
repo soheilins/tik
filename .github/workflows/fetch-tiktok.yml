@@ -15,26 +15,13 @@ permissions:
   contents: write
 
 jobs:
-  download-and-commit:
+  download-and-split:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Install system dependencies for curl_cffi
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y python3-pip python3-dev libcurl4-openssl-dev build-essential
-
-      - name: Install yt-dlp with impersonation support
-        run: |
-          pip install --upgrade pip
-          pip install --no-cache-dir curl_cffi
-          pip install --no-cache-dir yt-dlp[default]
-
-      - name: Verify impersonation support
-        run: |
-          yt-dlp --list-impersonate-targets | head -n 5
+      - name: Install yt-dlp
+        run: pip install yt-dlp
 
       - name: Get video URLs
         run: |
@@ -43,40 +30,45 @@ jobs:
           yt-dlp --flat-playlist --print url "https://www.tiktok.com/@$USERNAME" 2>/dev/null | head -n $MAX > urls.txt
           echo "Found $(wc -l < urls.txt) URLs"
 
-      - name: Download videos (with retry and impersonation)
+      - name: Download, split if >100MB, and store
         run: |
           USERNAME="${{ github.event.inputs.username }}"
           mkdir -p "videos/$USERNAME"
-          
-          # Pass 1: Initial download with impersonation
-          echo "=== Pass 1: Initial download ==="
+          CHUNK_SIZE=5M   # 5 MB per chunk
+
           while read url; do
             echo "Downloading $url"
-            if ! yt-dlp --impersonate chrome --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" -o "videos/$USERNAME/%(title).60s_%(id)s.%(ext)s" "$url"; then
-              echo "$url" >> failed.txt
+            # Download to a temp file
+            yt-dlp -o "temp_video.%(ext)s" "$url"
+            # Get the actual file name
+            VIDEO_FILE=$(ls temp_video.* 2>/dev/null | head -1)
+            if [ -f "$VIDEO_FILE" ]; then
+              FILE_SIZE=$(stat -c%s "$VIDEO_FILE")
+              # Extract video ID from filename (yt-dlp includes ID)
+              VIDEO_ID=$(yt-dlp --print id "$url")
+              VIDEO_TITLE=$(yt-dlp --print title "$url" | tr -d '/' | cut -c1-50)
+              if [ $FILE_SIZE -gt $((100 * 1024 * 1024)) ]; then
+                echo "  File size >100MB, splitting into ${CHUNK_SIZE} chunks"
+                mkdir -p "videos/$USERNAME/${VIDEO_ID}_chunks"
+                split -b $CHUNK_SIZE -d "$VIDEO_FILE" "videos/$USERNAME/${VIDEO_ID}_chunks/chunk_"
+                # Save metadata
+                echo "$VIDEO_TITLE" > "videos/$USERNAME/${VIDEO_ID}_chunks/title.txt"
+                echo "$VIDEO_ID" > "videos/$USERNAME/${VIDEO_ID}_chunks/id.txt"
+              else
+                echo "  File size <=100MB, saving directly"
+                cp "$VIDEO_FILE" "videos/$USERNAME/${VIDEO_TITLE}_${VIDEO_ID}.mp4"
+              fi
+              rm "$VIDEO_FILE"
+            else
+              echo "  Failed to download $url"
             fi
           done < urls.txt
-          
-          # Pass 2: Retry failed downloads without impersonation (fallback)
-          if [ -f failed.txt ] && [ -s failed.txt ]; then
-            echo "=== Pass 2: Retrying failed downloads without impersonation ==="
-            while read url; do
-              echo "Retrying $url"
-              yt-dlp -o "videos/$USERNAME/%(title).60s_%(id)s.%(ext)s" "$url"
-            done < failed.txt
-            rm failed.txt
-          else
-            echo "No failed downloads to retry"
-          fi
-          
-          echo "Download complete. Files in videos/$USERNAME/:"
-          ls -lh "videos/$USERNAME/"
 
-      - name: Commit and push videos
+      - name: Commit and push
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add videos/
           git add urls.txt
-          git diff --staged --quiet || git commit -m "Add TikTok videos for @${{ github.event.inputs.username }}"
+          git diff --staged --quiet || git commit -m "TikTok videos for @${{ github.event.inputs.username }}"
           git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git HEAD:main
