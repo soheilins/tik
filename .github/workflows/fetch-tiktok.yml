@@ -21,12 +21,20 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Install yt-dlp with impersonation dependencies
+      - name: Install system dependencies for curl_cffi
         run: |
           sudo apt-get update
-          sudo apt-get install -y python3-pip python3-setuptools
+          sudo apt-get install -y python3-pip python3-dev libcurl4-openssl-dev build-essential
+
+      - name: Install yt-dlp with impersonation support
+        run: |
           pip install --upgrade pip
-          pip install yt-dlp[default] curl_cffi
+          pip install --no-cache-dir curl_cffi
+          pip install --no-cache-dir yt-dlp[default]
+
+      - name: Verify impersonation support
+        run: |
+          yt-dlp --list-impersonate-targets | head -n 5
 
       - name: Get video URLs
         run: |
@@ -40,21 +48,21 @@ jobs:
           USERNAME="${{ github.event.inputs.username }}"
           mkdir -p "videos/$USERNAME"
           
-          # Pass 1: Initial download
+          # Pass 1: Initial download with impersonation
           echo "=== Pass 1: Initial download ==="
           while read url; do
             echo "Downloading $url"
-            if ! yt-dlp --impersonate chrome -o "videos/$USERNAME/%(title).60s_%(id)s.%(ext)s" "$url"; then
+            if ! yt-dlp --impersonate chrome --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" -o "videos/$USERNAME/%(title).60s_%(id)s.%(ext)s" "$url"; then
               echo "$url" >> failed.txt
             fi
           done < urls.txt
           
-          # Pass 2: Retry failed downloads
+          # Pass 2: Retry failed downloads without impersonation (fallback)
           if [ -f failed.txt ] && [ -s failed.txt ]; then
-            echo "=== Pass 2: Retrying failed downloads ==="
+            echo "=== Pass 2: Retrying failed downloads without impersonation ==="
             while read url; do
               echo "Retrying $url"
-              yt-dlp --impersonate chrome -o "videos/$USERNAME/%(title).60s_%(id)s.%(ext)s" "$url"
+              yt-dlp -o "videos/$USERNAME/%(title).60s_%(id)s.%(ext)s" "$url"
             done < failed.txt
             rm failed.txt
           else
