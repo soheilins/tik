@@ -33,31 +33,32 @@ jobs:
 
       - name: Download videos (with retry)
         run: |
-          mkdir -p videos
-          # Try up to 2 passes: first download, then retry failed
-          for pass in 1 2; do
-            if [ $pass -eq 1 ]; then
-              echo "=== Pass 1: Initial download ==="
-              cat urls.txt | while read url; do
-                echo "Downloading $url"
-                if ! yt-dlp -o "videos/%(title).60s_%(id)s.%(ext)s" "$url"; then
-                  echo "$url" >> failed.txt
-                fi
-              done
-            else
-              if [ -f failed.txt ] && [ -s failed.txt ]; then
-                echo "=== Pass 2: Retrying failed downloads ==="
-                cat failed.txt | while read url; do
-                  echo "Retrying $url"
-                  yt-dlp -o "videos/%(title).60s_%(id)s.%(ext)s" "$url"
-                done
-                rm failed.txt
-              else
-                echo "No failed downloads to retry"
-              fi
+          USERNAME="${{ github.event.inputs.username }}"
+          mkdir -p "videos/$USERNAME"
+          
+          # Pass 1: Initial download
+          echo "=== Pass 1: Initial download ==="
+          while read url; do
+            echo "Downloading $url"
+            if ! yt-dlp -o "videos/$USERNAME/%(title).60s_%(id)s.%(ext)s" "$url"; then
+              echo "$url" >> failed.txt
             fi
-          done
-          ls -lh videos/
+          done < urls.txt
+          
+          # Pass 2: Retry failed downloads
+          if [ -f failed.txt ] && [ -s failed.txt ]; then
+            echo "=== Pass 2: Retrying failed downloads ==="
+            while read url; do
+              echo "Retrying $url"
+              yt-dlp -o "videos/$USERNAME/%(title).60s_%(id)s.%(ext)s" "$url"
+            done < failed.txt
+            rm failed.txt
+          else
+            echo "No failed downloads to retry"
+          fi
+          
+          echo "Download complete. Files in videos/$USERNAME/:"
+          ls -lh "videos/$USERNAME/"
 
       - name: Commit and push videos
         run: |
