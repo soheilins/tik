@@ -29,22 +29,18 @@ jobs:
           USERNAME="${{ github.event.inputs.username }}"
           mkdir -p "videos/$USERNAME"
           EXISTING_IDS=""
-          # Look for .mp4 files (format: title_ID.mp4)
           for f in videos/$USERNAME/*.mp4; do
             if [ -f "$f" ]; then
-              # Extract ID after last underscore before .mp4
               id=$(basename "$f" .mp4 | sed 's/.*_//')
               EXISTING_IDS="$EXISTING_IDS $id"
             fi
           done
-          # Look for chunk folders (format: ID_chunks)
           for d in videos/$USERNAME/*_chunks/; do
             if [ -d "$d" ]; then
               id=$(basename "$d" | sed 's/_chunks//')
               EXISTING_IDS="$EXISTING_IDS $id"
             fi
           done
-          # Save to file for later steps
           echo "$EXISTING_IDS" | tr ' ' '\n' > existing_ids.txt
           echo "Found $(wc -l < existing_ids.txt) existing videos"
 
@@ -52,9 +48,8 @@ jobs:
         run: |
           USERNAME="${{ github.event.inputs.username }}"
           MAX="${{ github.event.inputs.max_videos }}"
-          # Fetch video info: URL and ID
-          yt-dlp --flat-playlist --print "url %(id)s" "https://www.tiktok.com/@$USERNAME" 2>/dev/null | head -n $MAX > video_list.txt
-          # Filter out URLs whose ID is already in existing_ids.txt
+          yt-dlp --flat-playlist --print "%(url)s %(id)s" "https://www.tiktok.com/@$USERNAME" 2>/dev/null | head -n $MAX > video_list.txt
+          > new_urls.txt
           while read url id; do
             if ! grep -qx "$id" existing_ids.txt; then
               echo "$url" >> new_urls.txt
@@ -67,7 +62,7 @@ jobs:
           USERNAME="${{ github.event.inputs.username }}"
           mkdir -p "videos/$USERNAME"
           CHUNK_SIZE=5M
-          if [ ! -f new_urls.txt ] || [ ! -s new_urls.txt ]; then
+          if [ ! -s new_urls.txt ]; then
             echo "No new videos to download."
             exit 0
           fi
